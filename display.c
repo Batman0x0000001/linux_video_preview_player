@@ -27,7 +27,10 @@ int display_init(AppState *app)
         }
     }
 
-    app->texture = NULL;
+    app->texture = SDL_CreateTexture(app->renderer,SDL_PIXELFORMAT_IYUV,SDL_TEXTUREACCESS_STREAMING,app->video_dec_ctx->width,app->video_dec_ctx->height);
+    if(!app->texture){
+        return -1;
+    }
     return 0;
 }
 
