@@ -16,9 +16,22 @@ struct PacketQueue {
     SDL_cond *cond;
 };
 
+/*
+帧队列不是链表，而是一个固定容量的环形队列
+    视频显示通常不需要无限积压帧
+    固定容量更容易控制内存
+    生产者/消费者模型很清晰
+    环形队列对视频帧这种“先进先出、容量受限”的场景非常合适
+*/
 struct FrameQueue {
+    VideoFrame *frames;
     int capacity;
-    int dummy;
+    int size;
+    int rindex;
+    int windex;
+
+    SDL_mutex *mutex;
+    SDL_cond *cond;
 };
 
 PacketQueue *packet_queue_create(void)
@@ -88,12 +101,74 @@ FrameQueue *frame_queue_create(int capacity)
         return NULL;
     }
 
+    frame_q->frames = (VideoFrame *)calloc((size_t)capacity,sizeof(VideoFrame));
+    if(!frame_q->frames){
+        free(frame_q);
+        return NULL;
+    }
+
     frame_q->capacity = capacity;
+    frame_q->size = 0;
+    frame_q->rindex = 0;
+    frame_q->windex = 0;
+
+    frame_q->mutex = SDL_CreateMutex();
+    frame_q->cond = SDL_CreateCond();
+    if (!frame_q->mutex || !frame_q->cond) {
+        if (frame_q->cond) {
+            SDL_DestroyCond(frame_q->cond);
+        }
+        if (frame_q->mutex) {
+            SDL_DestroyMutex(frame_q->mutex);
+        }
+        free(frame_q->frames);
+        free(frame_q);
+        return NULL;
+    }
+
+    for (int i = 0; i < capacity; i++)
+    {
+        //[i]下标访问本身就包含了解引用操作（等价于 *(frames+i)），结果是结构体值而非指针，所以后面用 . 而不是 ->。
+        frame_q->frames[i].frame = av_frame_alloc();
+        frame_q->frames[i].pts_sec = 0.0;
+
+        if(!frame_q->frames[i].frame){
+            frame_queue_destroy(frame_q);
+            return NULL;
+        }
+    }
+    
     return frame_q;
 }
 
 void frame_queue_destroy(FrameQueue *frame_q)
 {
+    if(!frame_q){
+        return;
+    }
+
+    SDL_LockMutex(frame_q->mutex);
+
+    if(frame_q->frames){
+        for (int i = 0; i < frame_q->capacity; i++)
+        {
+            if(frame_q->frames[i].frame){
+                av_frame_free(&frame_q->frames[i]);
+            }
+        }
+        free(frame_q->frames);
+        frame_q->frames = NULL;
+    }
+
+    frame_q->capacity = 0;
+    frame_q->size = 0;
+    frame_q->rindex = 0;
+    frame_q->windex = 0;
+    
+    SDL_UnlockMutex(frame_q->mutex);
+    SDL_DestroyMutex(frame_q->mutex);
+    SDL_DestroyCond(frame_q->cond);
+
     free(frame_q);
 }
 
@@ -195,4 +270,69 @@ int packet_queue_size(PacketQueue *packet_q){
     SDL_UnlockMutex(packet_q->mutex);
 
     return size;
+}
+
+int frame_queue_peek_writable(AppState *app,FrameQueue *frame_q,VideoFrame **vf){
+    SDL_LockMutex(frame_q->mutex);
+
+    while(frame_q->size > frame_q->capacity && !app->quit){
+        SDL_CondWait(frame_q->cond,frame_q->mutex);
+    }
+
+    if(app->quit){
+        SDL_UnlockMutex(frame_q->mutex);
+        return -1;
+    }
+
+    *vf = &frame_q->frames[frame_q->windex];
+    SDL_UnlockMutex(frame_q->mutex);
+
+    return 0;
+}
+
+void frame_queue_push(FrameQueue *frame_q){
+    SDL_LockMutex(frame_q->mutex);
+
+    frame_q->windex++;
+    if(frame_q->windex == frame_q->capacity){
+        frame_q->windex = 0;
+    }
+
+    //size 字段来区分"满"和"空"的状态，size >= capacity 时生产者等待，size > 0 时消费者才能读取
+    frame_q->size++;
+
+    SDL_CondSignal(frame_q->cond);
+    SDL_UnlockMutex(frame_q->mutex);
+}
+
+int frame_queue_peek_readable(AppState *app,FrameQueue *frame_q,VideoFrame **vf){
+    SDL_LockMutex(frame_q->mutex);
+
+    while(frame_q->size <= 0 && !app->quit){
+        SDL_CondWait(frame_q->cond,frame_q->mutex);
+    }
+
+    if(app->quit){
+        SDL_UnlockMutex(frame_q->mutex);
+        return -1;
+    }
+
+    *vf = &frame_q->frames[frame_q->rindex];
+    SDL_UnlockMutex(frame_q->mutex);
+
+    return 0;
+}
+
+void frame_queue_next(FrameQueue *frame_q){
+    SDL_LockMutex(frame_q->mutex);
+
+    frame_q->rindex++;
+    if(frame_q->rindex == frame_q->capacity){
+        frame_q->rindex = 0;
+    }
+
+    frame_q->size--;
+
+    SDL_CondSignal(frame_q->cond);
+    SDL_UnlockMutex(frame_q->mutex);
 }
