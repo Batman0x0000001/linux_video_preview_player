@@ -52,13 +52,26 @@ typedef struct AppState
     PacketQueue *video_pkt_queue;
     FrameQueue *video_frm_queue;
     
-    //clock
-    double frame_timer;
-    double frame_last_pts;
-    double frame_last_delay;
+
+    /*
+    clock:
+        第一层：媒体时间层
+        描述“视频本来应该怎么走”：
+            pts_sec
+            frame_last_pts
+            frame_last_delay
+
+        第二层：现实世界时钟层
+        描述“电脑此刻真的走到哪里了”：
+            frame_timer
+            video_current_pts_time
+    */
+    double frame_timer;//记录上一帧实际显示的时刻（锚点）
+    double frame_last_pts;//记录上一帧的pts，用于计算delay
+    double frame_last_delay;//记录上一次正常的delay，用于异常兜底
     double video_clock;
 
-    double video_current_pts;
+    double video_current_pts;//当前时间基准
     int64_t video_current_pts_time;
 }AppState;
 

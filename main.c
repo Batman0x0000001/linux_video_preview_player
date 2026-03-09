@@ -9,6 +9,7 @@
 #include"display.h"
 #include"clock.h"
 #include"control.h"
+#include<libavutil/time.h>
 
 static void app_state_init(AppState *app,const char *filename){
     memset(app,0,sizeof(AppState));
@@ -20,7 +21,7 @@ static void app_state_init(AppState *app,const char *filename){
     app->window_width=960;
     app->window_height=540;
 
-    app->frame_timer=0.0;
+    app->frame_timer=av_gettime_relative() / 1000000.0;
     app->frame_last_pts=0.0;
     app->frame_last_delay=0.04;
     app->video_clock=0.0;
