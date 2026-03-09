@@ -120,10 +120,10 @@ static int decoder_thread(void *arg){
 
 cleanup:
     if(frame){
-        av_frame_free(frame);
+        av_frame_free(&frame);
     }
     if(pkt){
-        av_packet_free(pkt);
+        av_packet_free(&pkt);
     }
 
     return ret;
@@ -148,7 +148,7 @@ int decoder_open_video(AppState *app)
         return AVERROR(ENOMEM);
     }
 
-    ret = avcodec_parameters_to_context(app->video_dec,app->video_stream->codecpar);
+    ret = avcodec_parameters_to_context(app->video_dec_ctx,app->video_stream->codecpar);
     if(ret < 0){
         print_ffmpeg_error("avcodec_parameters_to_context failed",ret);
         return ret;
@@ -169,7 +169,7 @@ int decoder_open_video(AppState *app)
         SWS_BILINEAR,
         NULL,NULL,NULL);
     if(!app->sws_ctx){
-        fprintf(stderr, "sws_getContext failed", SDL_GetError());
+        fprintf(stderr, "sws_getContext failed:%s\n", SDL_GetError());
         return AVERROR(EINVAL);
     }
 
@@ -180,7 +180,7 @@ int decoder_start(AppState *app)
 {
     app->decode_tid = SDL_CreateThread(decoder_thread,"decoder_thread",app);
     if(!app->decode_tid){
-        fprintf(stderr, "SDL_CreateThread failed", SDL_GetError());
+        fprintf(stderr, "SDL_CreateThread failed:%s\n", SDL_GetError());
         return -1;
     }
     

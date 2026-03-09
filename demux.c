@@ -12,7 +12,7 @@ static int demux_thread(void *arg){
     int ret = 0;
 
     pkt = av_packet_alloc();
-    if(pkt){
+    if(!pkt){
         return AVERROR(ENOMEM);
     }
 
@@ -57,12 +57,12 @@ int demux_open_input(AppState *app)
         return ret;
     }
 
-    ret = avformat_find_stream_info(&app->fmt_ctx,NULL);
+    ret = avformat_find_stream_info(app->fmt_ctx,NULL);
     if(ret < 0){
         return ret;
     }
 
-    dump_input_info(&app);
+    dump_input_info(app);
     return 0;
 }
 
@@ -70,7 +70,7 @@ int demux_start(AppState *app)
 {
     app->demux_tid = SDL_CreateThread(demux_thread,"demux_thread",app);
     if(!app->demux_tid){
-        fprintf(stderr, "SDL_CreateThread failed", SDL_GetError());
+        fprintf(stderr, "SDL_CreateThread failed:%s\n", SDL_GetError());
         return -1;
     }
 

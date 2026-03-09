@@ -153,7 +153,7 @@ void frame_queue_destroy(FrameQueue *frame_q)
         for (int i = 0; i < frame_q->capacity; i++)
         {
             if(frame_q->frames[i].frame){
-                av_frame_free(&frame_q->frames[i]);
+                av_frame_free(&frame_q->frames[i].frame);
             }
         }
         free(frame_q->frames);
@@ -213,7 +213,7 @@ int packet_queue_put(PacketQueue *packet_q,const AVPacket *src_pkt){
     return 0;
 }
 
-int packet_queue_get(AppState *app,PacketQueue *packet_q,const AVPacket *dst_pkt,int block){
+int packet_queue_get(AppState *app,PacketQueue *packet_q,AVPacket *dst_pkt,int block){
     PacketNode *node = NULL;
     int ret = 0;
 
@@ -335,4 +335,22 @@ void frame_queue_next(FrameQueue *frame_q){
 
     SDL_CondSignal(frame_q->cond);
     SDL_UnlockMutex(frame_q->mutex);
+}
+
+int frame_queue_try_peek_readable(FrameQueue *frame_q,VideoFrame **vf){
+    int ret = 0;
+
+    SDL_LockMutex(frame_q->mutex);
+
+    if(frame_q->size > 0){
+        *vf = &frame_q->frames[frame_q->rindex];
+        ret = 1;
+    }else{
+        *vf = NULL;
+        ret = 0;
+    }
+
+    SDL_UnlockMutex(frame_q->mutex);
+    
+    return ret;
 }

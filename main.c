@@ -93,7 +93,7 @@ int main(int argc, char const *argv[])
         goto cleanup;
     }
 
-    app.video_frm_queue = frame_queue_create(3);
+    app.video_frm_queue = frame_queue_create(32);
     if (!app.video_frm_queue) {
         fprintf(stderr, "创建视频帧队列失败\n");
         goto cleanup;
