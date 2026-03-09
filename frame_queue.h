@@ -22,4 +22,7 @@ int frame_queue_peek_writable(AppState *app,FrameQueue *frame_q,VideoFrame **vf)
 int frame_queue_peek_readable(AppState *app,FrameQueue *frame_q,VideoFrame **vf);
 int frame_queue_try_peek_readable(FrameQueue *frame_q,VideoFrame **vf);
 
+void packet_queue_abort(PacketQueue *packet_q);
+void frame_queue_abort(FrameQueue *frame_q);
+
 #endif

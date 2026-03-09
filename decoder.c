@@ -14,6 +14,9 @@ static int queue_decode_frame(AppState *app,const AVFrame *src_frame,double pts)
 
     ret = frame_queue_peek_writable(app,app->video_frm_queue,&vf);
     if(ret < 0){
+        if(app->quit){
+            return AVERROR_EXIT;
+        }
         return ret;
     }
     if(!vf||!vf->frame){
@@ -109,6 +112,9 @@ static int decoder_thread(void *arg){
             }
 
             ret = queue_decode_frame(app,frame,pts);
+            if(ret == AVERROR_EXIT){
+                break;
+            }
             if(ret < 0){
                 print_ffmpeg_error("queue_decode_frame failed",ret);
                 goto cleanup;

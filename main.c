@@ -37,6 +37,9 @@ static void app_state_cleanup(AppState *app){
 
     app->quit = 1;
 
+    packet_queue_abort(app->video_pkt_queue);
+    frame_queue_abort(app->video_frm_queue);
+
     if (app->demux_tid) {
         SDL_WaitThread(app->demux_tid, NULL);
         app->demux_tid = NULL;

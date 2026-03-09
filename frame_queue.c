@@ -354,3 +354,23 @@ int frame_queue_try_peek_readable(FrameQueue *frame_q,VideoFrame **vf){
     
     return ret;
 }
+
+void packet_queue_abort(PacketQueue *packet_q){
+    if(!packet_q){
+        return;
+    }
+
+    SDL_LockMutex(packet_q->mutex);
+    SDL_CondBroadcast(packet_q->cond);
+    SDL_UnlockMutex(packet_q->mutex);
+}
+
+void frame_queue_abort(FrameQueue *frame_q){
+    if(!frame_q){
+        return;
+    }
+
+    SDL_LockMutex(frame_q->mutex);
+    SDL_CondBroadcast(frame_q->cond);
+    SDL_UnlockMutex(frame_q->mutex);
+}

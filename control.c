@@ -34,6 +34,17 @@ static int frame_should_present(AppState *app,const VideoFrame *vf){
     return 0;
 }
 
+static void reset_playback_timing_after_resume(AppState *app){
+    double now = av_gettime_relative() / 1000000.0;
+    double cur_pts = clock_get_video(app);
+
+    app->frame_timer = now;
+    app->frame_last_pts = cur_pts;
+    app->frame_last_delay = 0.04;
+    app->video_current_pts = cur_pts;
+    app->video_current_pts_time = av_gettime_relative();
+}
+
 int control_event_loop(AppState *app)
 {
     SDL_Event event;
@@ -46,9 +57,16 @@ int control_event_loop(AppState *app)
                 switch (event.key.keysym.sym) {
                 case SDLK_ESCAPE:
                     app->quit = 1;
+                    packet_queue_abort(app->video_pkt_queue);
+                    frame_queue_abort(app->video_frm_queue);
                     break;
                 case SDLK_SPACE:
+                    int was_paused = app->paused;
                     app->paused = !app->paused;
+
+                    if(was_paused && !app->paused){
+                        reset_playback_timing_after_resume(app);
+                    }
                     break;
                 default:
                     break;
