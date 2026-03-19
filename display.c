@@ -84,7 +84,7 @@ static void calculate_display_rect(AppState *app,SDL_Rect *rect){
 
     if(w>app->window_width){
         w = app->window_width;
-        h = (int)(w * aspect_ratio)& ~3;
+        h = (int)(w / aspect_ratio)& ~3;
     }
 
     x = (app->window_width - w)/2;

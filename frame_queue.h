@@ -18,6 +18,7 @@ int packet_queue_size(PacketQueue *packet_q);
 
 void frame_queue_push(FrameQueue *frame_q);
 void frame_queue_next(FrameQueue *frame_q);
+int frame_queue_size(FrameQueue *frame_q);
 int frame_queue_peek_writable(AppState *app,FrameQueue *frame_q,VideoFrame **vf);
 int frame_queue_peek_readable(AppState *app,FrameQueue *frame_q,VideoFrame **vf);
 int frame_queue_try_peek_readable(FrameQueue *frame_q,VideoFrame **vf);

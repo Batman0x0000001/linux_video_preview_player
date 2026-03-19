@@ -141,6 +141,21 @@ FrameQueue *frame_queue_create(int capacity)
     return frame_q;
 }
 
+int frame_queue_size(FrameQueue *frame_q)
+{
+    int size = 0;
+
+    if (!frame_q) {
+        return 0;
+    }
+
+    SDL_LockMutex(frame_q->mutex);
+    size = frame_q->size;
+    SDL_UnlockMutex(frame_q->mutex);
+
+    return size;
+}
+
 void frame_queue_destroy(FrameQueue *frame_q)
 {
     if(!frame_q){
@@ -275,7 +290,7 @@ int packet_queue_size(PacketQueue *packet_q){
 int frame_queue_peek_writable(AppState *app,FrameQueue *frame_q,VideoFrame **vf){
     SDL_LockMutex(frame_q->mutex);
 
-    while(frame_q->size > frame_q->capacity && !app->quit){
+    while(frame_q->size >= frame_q->capacity && !app->quit){
         SDL_CondWait(frame_q->cond,frame_q->mutex);
     }
 

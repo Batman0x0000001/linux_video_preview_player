@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-Wall -Wextra -O2 -g
-PKG_CFLAGS=$(shell pkg-config --cflags sdl2 libavformat libavcodec libavutil libswscale)
-PKG_LIBS=$(shell pkg-config --libs sdl2 libavformat libavcodec libavutil libswscale)
+PKG_CFLAGS=$(shell pkg-config --cflags sdl2 libavformat libavcodec libavutil libswscale libswresample)
+PKG_LIBS=$(shell pkg-config --libs sdl2 libavformat libavcodec libavutil libswscale libswresample)
 
 TARGET=linux_video_preview_player
 
@@ -11,7 +11,8 @@ SRCS=main.c \
      frame_queue.c \
      display.c \
      clock.c \
-     control.c
+     control.c \
+     audio_output.c
 
 OBJS=$(SRCS:.c=.o)
 
