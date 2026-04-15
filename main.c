@@ -11,11 +11,18 @@
 #include"control.h"
 #include<libavutil/time.h>
 #include "audio_output.h"
+#include "speed_filter.h"
 
 static void app_state_init(AppState *app,const char *filename){
     memset(app,0,sizeof(AppState));
     
     snprintf(app->input_filename,sizeof(app->input_filename),"%s",filename);
+
+    if (strncmp(filename, "rtsp://", 7) == 0) {
+        app->is_rtsp = 1;
+    } else {
+        app->is_rtsp = 0;
+    }
 
     app->video_stream_index=-1;
 
@@ -37,6 +44,11 @@ static void app_state_init(AppState *app,const char *filename){
     app->video_decode_finished = 0;
     app->audio_decode_finished = 0;
     app->audio_output_idle = 1;
+
+    app->speed = 1.0;
+    app->speed_change_req = 0;
+    app->audio_filter_pts = -1.0;
+    app->volume = 128; /* SDL_MIX_MAXVOLUME 默认等于 128 */
 }
 
 static void app_state_cleanup(AppState *app){
@@ -68,6 +80,7 @@ static void app_state_cleanup(AppState *app){
     }
 
     audio_output_close(app);
+    speed_filter_free(app);
     display_destroy(app);
 
     frame_queue_destroy(app->video_frm_queue);
@@ -161,6 +174,10 @@ int main(int argc, char const *argv[])
         }
         if (audio_output_open(&app) < 0) {
             fprintf(stderr, "初始化音频输出失败\n");
+            goto cleanup;
+        }
+        if (decoder_audio_filter_init(&app) < 0) {
+            fprintf(stderr, "初始化音频变速滤镜失败\n");
             goto cleanup;
         }
     }

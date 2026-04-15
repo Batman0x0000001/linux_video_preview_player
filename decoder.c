@@ -3,6 +3,7 @@
 #include "decoder.h"
 #include"frame_queue.h"
 #include "audio_output.h"
+#include "speed_filter.h"
 
 static void print_ffmpeg_error(const char *msg,int errnum){
     char errbuf[AV_ERROR_MAX_STRING_SIZE]={0};
@@ -71,13 +72,22 @@ static int queue_decode_frame(AppState *app,const AVFrame *src_frame,double pts)
         vf->frame->data,
         vf->frame->linesize);
     
-    vf->pts_sec = pts;
+    /*
+     * pts 存入输出时域：pts_output = pts_orig / speed
+     * 使得视频帧的显示节奏和音频时钟（atempo 输出 pts）均处于同一时域，
+     * 现有同步逻辑无需修改。
+     */
+    vf->pts_sec = (app->speed > 0.0) ? (pts / app->speed) : pts;
     frame_queue_push(app->video_frm_queue);
 
     return 0;
 }
 
-static int queue_decoded_audio(AppState *app, const AVFrame *frame)
+/*
+ * queue_decoded_audio — 将一帧 PCM（已经过滤镜 / 原始）转为 s16 并入队。
+ * pts_sec: 已由调用方计算好的输出时域 pts（秒），直接存入 AudioBuffer。
+ */
+static int queue_decoded_audio(AppState *app, const AVFrame *frame, double pts_sec)
 {
     uint8_t *out_buf = NULL;
     int out_linesize = 0;
@@ -85,7 +95,6 @@ static int queue_decoded_audio(AppState *app, const AVFrame *frame)
     int out_samples;
     int out_buf_size;
     int ret;
-    double pts_sec;
 
     if (!app || !frame || !app->swr_ctx || !app->audio_buf_queue) {
         return AVERROR(EINVAL);
@@ -130,8 +139,6 @@ static int queue_decoded_audio(AppState *app, const AVFrame *frame)
         ret = out_buf_size;
         goto cleanup;
     }
-
-    pts_sec = frame_pts_to_seconds(frame, app->audio_stream->time_base);
 
     ret = audio_buffer_queue_put(app->audio_buf_queue, out_buf, out_buf_size, pts_sec);
 
@@ -215,7 +222,72 @@ static int drain_video_decoder(AppState *app, AVFrame *frame)
     }
 }
 
-static int decode_audio_packet(AppState *app, AVPacket *pkt, AVFrame *frame)
+/*
+ * push_audio_frame — 将一帧解码帧经过 atempo 滤镜（若已初始化）存入 PCM 队列。
+ * raw_pts_sec: 敲解码帧在原始流时域中的 pts（秒）。
+ * 滤镜输出帧的 pts 已由 atempo 缩放到输出时域，用 abuffersink 时域基转成秒。
+ */
+static int push_audio_frame(AppState *app, AVFrame *frame, AVFrame *filt_frame, double raw_pts_sec)
+{
+    int ret;
+    AVRational sink_tb;
+    double filt_pts_sec;
+
+    if (!app->audio_fg) {
+        /* 无滤镜图：不走滤镜直接算 pts_sec */
+        if (app->audio_filter_pts < 0.0) {
+             app->audio_filter_pts = (app->speed > 0.0) ? (raw_pts_sec / app->speed) : raw_pts_sec;
+        }
+        double pts_sec = app->audio_filter_pts;
+        app->audio_filter_pts += (double)frame->nb_samples / app->audio_src.sample_rate;
+        return queue_decoded_audio(app, frame, pts_sec);
+    }
+
+    /* 1. 将解码帧送入 abuffersrc */
+    ret = speed_filter_send(app, frame);
+    if (ret < 0) {
+        return ret;
+    }
+
+    /* 2. 循环取出所有已拉伸帧 */
+    sink_tb = av_buffersink_get_time_base(app->audio_fg_sink);
+
+    while (1) {
+        ret = speed_filter_receive(app, filt_frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        }
+        if (ret < 0) {
+            return ret;
+        }
+
+        /*
+         * 主动维护输出 PTS：
+         * FFmpeg 滤镜图在重建后会重新以初始输入为基准计算 PTS，这在多次 Seek 或
+         * 变速重建中会导致极为严重的全局时间跳跃不连续。
+         * 解决方案：第一次从滤镜收到原始流 PTS 时，算出对应的输出域初始时间。
+         * 此后每压出一帧音频缓冲，就严格按照其拉伸后的大小（即时长）持续累加 PTS，
+         * 保证音画输出主频的绝对平滑和单调递增，彻底根除 Seek 时残留旧数据导致的时间倒流。
+         */
+        if (app->audio_filter_pts < 0.0) {
+            app->audio_filter_pts = (app->speed > 0.0) ? (raw_pts_sec / app->speed) : raw_pts_sec;
+        }
+        filt_pts_sec = app->audio_filter_pts;
+        
+        /* 累加上这一个输出帧占用的系统播放时长 */
+        app->audio_filter_pts += (double)filt_frame->nb_samples / app->audio_src.sample_rate;
+
+        ret = queue_decoded_audio(app, filt_frame, filt_pts_sec);
+        av_frame_unref(filt_frame);
+        if (ret < 0) {
+            return ret;
+        }
+    }
+
+    return 0;
+}
+
+static int decode_audio_packet(AppState *app, AVPacket *pkt, AVFrame *frame, AVFrame *filt_frame)
 {
     int ret;
 
@@ -226,6 +298,8 @@ static int decode_audio_packet(AppState *app, AVPacket *pkt, AVFrame *frame)
     }
 
     while (1) {
+        double raw_pts;
+
         ret = avcodec_receive_frame(app->audio_dec_ctx, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             return 0;
@@ -235,16 +309,18 @@ static int decode_audio_packet(AppState *app, AVPacket *pkt, AVFrame *frame)
             return ret;
         }
 
-        ret = queue_decoded_audio(app, frame);
+        raw_pts = frame_pts_to_seconds(frame, app->audio_stream->time_base);
+
+        ret = push_audio_frame(app, frame, filt_frame, raw_pts);
         av_frame_unref(frame);
         if (ret < 0) {
-            print_ffmpeg_error("queue_decoded_audio failed", ret);
+            print_ffmpeg_error("push_audio_frame failed", ret);
             return ret;
         }
     }
 }
 
-static int drain_audio_decoder(AppState *app, AVFrame *frame)
+static int drain_audio_decoder(AppState *app, AVFrame *frame, AVFrame *filt_frame)
 {
     int ret;
 
@@ -255,22 +331,53 @@ static int drain_audio_decoder(AppState *app, AVFrame *frame)
     }
 
     while (1) {
+        double raw_pts;
+
         ret = avcodec_receive_frame(app->audio_dec_ctx, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-            return 0;
+            break;
         }
         if (ret < 0) {
             print_ffmpeg_error("audio drain receive_frame failed", ret);
             return ret;
         }
 
-        ret = queue_decoded_audio(app, frame);
+        raw_pts = frame_pts_to_seconds(frame, app->audio_stream->time_base);
+
+        ret = push_audio_frame(app, frame, filt_frame, raw_pts);
         av_frame_unref(frame);
         if (ret < 0) {
-            print_ffmpeg_error("queue_decoded_audio failed", ret);
+            print_ffmpeg_error("push_audio_frame (drain) failed", ret);
             return ret;
         }
     }
+
+    /* 将滤镜图中残留的 PCM 一并排尽 */
+    if (app->audio_fg) {
+        double filt_pts_sec;
+
+        speed_filter_send(app, NULL); //发送 EOF 信号
+        while (1) {
+            ret = speed_filter_receive(app, filt_frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            }
+            if (ret < 0) {
+                break;
+            }
+
+            if (app->audio_filter_pts < 0.0) {
+                 app->audio_filter_pts = 0.0; 
+            }
+            filt_pts_sec = app->audio_filter_pts;
+            app->audio_filter_pts += (double)filt_frame->nb_samples / app->audio_src.sample_rate;
+
+            queue_decoded_audio(app, filt_frame, filt_pts_sec);
+            av_frame_unref(filt_frame);
+        }
+    }
+
+    return 0;
 }
 
 static int open_codec_context_from_stream(AVCodecContext **dec_ctx,const AVCodec *dec,AVStream *stream){
@@ -462,6 +569,21 @@ static int video_decoder_thread(void *arg){
         }
 
         //把压缩的视频包喂给解码器
+        if (packet_queue_is_flush_pkt(pkt)) {
+            /*
+             * seek 哨兵到达：
+             * 1. 刷新解码器内部的 B/P 帧缓存
+             * 2. 清空帧队列里残留的旧帧
+             * 3. 重置 drained，下一个 EOF 才再次执行 drain
+             */
+            avcodec_flush_buffers(app->video_dec_ctx);
+            frame_queue_flush(app->video_frm_queue);
+            drained = 0;
+            pkt->data = NULL; /* 清除哨兵标记，防止 cleanup av_packet_free 误 free */
+            pkt->size = 0;
+            continue;
+        }
+
         ret = decode_video_packet(app, pkt, frame);
         av_packet_unref(pkt);
         if (ret == AVERROR_EXIT) {
@@ -485,20 +607,30 @@ cleanup:
 
 static int audio_decoder_thread(void *arg)
 {
-    AppState *app = (AppState *)arg;
-    AVPacket *pkt = NULL;
-    AVFrame *frame = NULL;
-    int ret = 0;
+    AppState *app  = (AppState *)arg;
+    AVPacket *pkt  = NULL;
+    AVFrame  *frame      = NULL; //解码原始帧
+    AVFrame  *filt_frame = NULL; //滤镜输出帧
+    int ret    = 0;
     int drained = 0;
 
-    pkt = av_packet_alloc();
-    frame = av_frame_alloc();
-    if (!pkt || !frame) {
+    pkt        = av_packet_alloc();
+    frame      = av_frame_alloc();
+    filt_frame = av_frame_alloc();
+    if (!pkt || !frame || !filt_frame) {
         ret = AVERROR(ENOMEM);
         goto cleanup;
     }
 
     while (!app->quit) {
+        /* ---- 速度变更检测：重建 atempo 滤镜图 ---- */
+        if (app->speed_change_req) {
+            if (speed_filter_rebuild(app) < 0) {
+                fprintf(stderr, "speed_filter_rebuild 失败，继续使用旧善镜图\n");
+            }
+            app->speed_change_req = 0;
+        }
+
         if (app->audio_buf_queue &&
             audio_buffer_queue_size(app->audio_buf_queue) > audio_buf_queue_limit_bytes(app)) {
             SDL_Delay(5);
@@ -506,14 +638,13 @@ static int audio_decoder_thread(void *arg)
         }
 
         ret = packet_queue_get(app, app->audio_pkt_queue, pkt, 0);
-        // printf("audio ret:%d\n",ret);
         if (ret < 0) {
             break;
         }
         if (ret == 0) {
              if (app->demux_finished && packet_queue_size(app->audio_pkt_queue) == 0) {
                 if (!drained) {
-                    ret = drain_audio_decoder(app, frame);
+                    ret = drain_audio_decoder(app, frame, filt_frame);
                     if (ret < 0) {
                         goto cleanup;
                     }
@@ -527,7 +658,35 @@ static int audio_decoder_thread(void *arg)
             continue;
         }
 
-        ret = decode_audio_packet(app, pkt, frame);
+        if (packet_queue_is_flush_pkt(pkt)) {
+            /*
+             * seek 哨兵到达：
+             * 1. 刷新音频解码器内部缓存
+             * 2. 清空 PCM 缓冲队列里的旧数据
+             * 3. 在 SDL 音频锁保护下清空正在播放的当前缓冲块
+             * 4. 重建滤镜图，丢弃内部残留缓冲
+             * 5. 重置滤镜 PTS 状态，下个包来时重新锚定新的时间起点
+             */
+            avcodec_flush_buffers(app->audio_dec_ctx);
+            if (app->audio_buf_queue) {
+                audio_buffer_queue_flush(app->audio_buf_queue);
+            }
+            if (app->audio_dev) {
+                SDL_LockAudioDevice(app->audio_dev);
+                audio_buffer_unref(&app->audio_buf_cur);
+                SDL_UnlockAudioDevice(app->audio_dev);
+            } else {
+                audio_buffer_unref(&app->audio_buf_cur);
+            }
+            speed_filter_rebuild(app); //seek 后滤镜内部缓冲已无效，重建
+            app->audio_filter_pts = -1.0; 
+            drained = 0;
+            pkt->data = NULL;
+            pkt->size = 0;
+            continue;
+        }
+
+        ret = decode_audio_packet(app, pkt, frame, filt_frame);
         av_packet_unref(pkt);
         if (ret == AVERROR_EXIT) {
             break;
@@ -538,6 +697,9 @@ static int audio_decoder_thread(void *arg)
     }
 
 cleanup:
+    if (filt_frame) {
+        av_frame_free(&filt_frame);
+    }
     if (frame) {
         av_frame_free(&frame);
     }
@@ -671,4 +833,9 @@ int decoder_start(AppState *app)
     }
 
     return 0;
+}
+
+int decoder_audio_filter_init(AppState *app)
+{
+    return speed_filter_init(app);
 }

@@ -196,7 +196,120 @@ int control_event_loop(AppState *app)
                         reset_playback_timing_after_resume(app);
                     }
                     break;
-                } 
+                }
+                case SDLK_LEFT:
+                case SDLK_RIGHT:
+                {
+                    if (app->is_rtsp) {
+                        fprintf(stderr, "RTSP流不支持seek功能\n");
+                        break;
+                    }
+                    /*
+                     * 1. clock_get_master(app) 返回的是“输出时域”（用户感受到的相对时间）。
+                     * 2. FFmpeg av_seek_frame 需要的是“原始流时域”。
+                     * 因此：原始时间 = 输出时间 * app->speed
+                     */
+                    double step = (event.key.keysym.sym == SDLK_RIGHT) ? 5.0 : -5.0; // 输出时域 5秒
+                    double cur_out = clock_get_master(app);
+                    double target_out = cur_out + step;
+                    
+                    double target_orig = target_out * app->speed;
+                    double duration_orig = 0.0;
+
+                    if (app->fmt_ctx) {
+                        duration_orig = (double)app->fmt_ctx->duration / AV_TIME_BASE;
+                    }
+
+                    if (target_orig < 0.0) {
+                        target_orig = 0.0;
+                    }
+                    if (duration_orig > 0 && target_orig > duration_orig) {
+                        target_orig = duration_orig;
+                    }
+
+                    app->seek_pos   = (int64_t)(target_orig * AV_TIME_BASE); // 毫秒
+                    app->seek_flags = (step < 0) ? AVSEEK_FLAG_BACKWARD : 0;
+                    app->seek_req   = 1; // 触发全队列 Flush
+
+                    /*
+                     * 立即重置时钟基准：
+                     * 新到达的帧其 PTS 也会被除以 speed，因此它将在 target_orig / speed。
+                     */
+                    app->frame_timer      = av_gettime_relative() / 1000000.0;
+                    app->frame_last_pts   = target_orig / app->speed; // 输出时域
+                    app->frame_last_delay = 0.04;
+                    app->audio_output_idle = 0;
+                    break;
+                }
+                case SDLK_COMMA:  /* < 键：减速 */
+                case SDLK_PERIOD: /* > 键：加速 */
+                {
+                    if (app->is_rtsp) {
+                        fprintf(stderr, "RTSP流不支持倍速功能\n");
+                        break;
+                    }
+                    static const double speed_levels[] = {0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
+                    static const int    n_levels = (int)(sizeof(speed_levels) / sizeof(speed_levels[0]));
+                    int i;
+                    int cur_idx = 2; /* 默认指向 1.0 */
+                    double old_speed = app->speed;
+
+                    for (i = 0; i < n_levels; i++) {
+                        if (app->speed <= speed_levels[i] + 0.01) {
+                            cur_idx = i;
+                            break;
+                        }
+                    }
+
+                    if (event.key.keysym.sym == SDLK_PERIOD) {
+                        cur_idx = (cur_idx + 1 < n_levels) ? cur_idx + 1 : n_levels - 1;
+                    } else {
+                        cur_idx = (cur_idx - 1 >= 0) ? cur_idx - 1 : 0;
+                    }
+
+                    if (speed_levels[cur_idx] == old_speed) {
+                        break;
+                    }
+
+                    app->speed = speed_levels[cur_idx];
+                    
+                    /*
+                     * 发生变速时，如果不全盘清空，缓存队列里“以老速度计算的 PTS”的包
+                     * 就会和“以新速度计算的 PTS”新包混杂，引发时光倒流式的严重卡顿。
+                     * 最干净的做法：触发一次无缝的“原地 Seek”！
+                     */
+                    double cur_out  = clock_get_master(app);
+                    double cur_orig = cur_out * old_speed; 
+
+                    app->seek_pos   = (int64_t)(cur_orig * AV_TIME_BASE);
+                    app->seek_flags = 0;
+                    app->seek_req   = 1; // 触发解码、各种队列的 flush，外加 atempo 滤镜重建(flush 逻辑里写的)
+
+                    /* 重置时序基准：新包即以 cur_orig / 新speed 入局 */
+                    app->frame_timer      = av_gettime_relative() / 1000000.0;
+                    app->frame_last_pts   = cur_orig / app->speed; 
+                    app->frame_last_delay = 0.04;
+                    app->audio_output_idle = 0;
+
+                    fprintf(stderr, "[speed] 切换至 %.2fx\n", app->speed);
+                    break;
+                }
+                case SDLK_UP:
+                case SDLK_DOWN:
+                {
+                    int step = (event.key.keysym.sym == SDLK_UP) ? 8 : -8;
+                    app->volume += step;
+
+                    if (app->volume < 0) {
+                        app->volume = 0;
+                    } else if (app->volume > SDL_MIX_MAXVOLUME) {
+                        app->volume = SDL_MIX_MAXVOLUME;
+                    }
+
+                    int volume_percent = (int)((app->volume * 100.0) / SDL_MIX_MAXVOLUME);
+                    fprintf(stderr, "[volume] 显示音量: %d%%\n", volume_percent);
+                    break;
+                }
                 default:
                     break;
                 }

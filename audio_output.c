@@ -264,9 +264,17 @@ static void sdl_audio_callback(void *userdata, Uint8 *stream, int len)
         }
 
         copy_len = min_int(len - filled, remain);
-        SDL_memcpy(stream + filled,
-                   app->audio_buf_cur.data + app->audio_buf_cur.pos,
-                   (size_t)copy_len);
+        
+        /* 
+         * 使用 SDL_MixAudioFormat 代替 memcpy 来实现无延迟硬件音量调整 
+         * 注意：stream 在开头已经被 SDL_memset 为 0 也就是纯静音。
+         * 与静音 mix 实际上就是直接复制并按比例缩放幅度。
+         */
+        SDL_MixAudioFormat(stream + filled,
+                           app->audio_buf_cur.data + app->audio_buf_cur.pos,
+                           AUDIO_S16SYS,
+                           copy_len,
+                           app->volume);
 
         app->audio_buf_cur.pos += copy_len;
         filled += copy_len;
@@ -410,4 +418,36 @@ void audio_output_close(AppState *app)
 
     SDL_zero(app->audio_spec);
     app->audio_hw_buf_size = 0;
+}
+
+/*
+ * audio_buffer_queue_flush — seek 后清空所有待播 PCM 缓冲。
+ * 与 abort 不同：只清数据，不设 abort_request，队列仍可继续接收新数据。
+ * 调用方必须在 SDL 音频锁保护下额外清空 audio_buf_cur（见 decoder.c）。
+ */
+void audio_buffer_queue_flush(AudioBufferQueue *queue)
+{
+    AudioBufferNode *node = NULL;
+    AudioBufferNode *next = NULL;
+
+    if (!queue) {
+        return;
+    }
+
+    SDL_LockMutex(queue->mutex);
+
+    node = queue->first;
+    while (node) {
+        next = node->next;
+        audio_buffer_reset(&node->buf);
+        free(node);
+        node = next;
+    }
+
+    queue->first      = NULL;
+    queue->last       = NULL;
+    queue->nb_buffers = 0;
+    queue->size       = 0;
+
+    SDL_UnlockMutex(queue->mutex);
 }

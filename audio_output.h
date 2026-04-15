@@ -9,6 +9,7 @@ int audio_buffer_queue_put(AudioBufferQueue *queue, const uint8_t *data, int siz
 int audio_buffer_queue_get(AppState *app, AudioBufferQueue *queue, AudioBuffer *out, int block);
 int audio_buffer_queue_size(AudioBufferQueue *queue);
 void audio_buffer_queue_abort(AudioBufferQueue *queue);
+void audio_buffer_queue_flush(AudioBufferQueue *queue); //seek 后清空所有待播 PCM 缓冲
 
 void audio_buffer_unref(AudioBuffer *buf);
 

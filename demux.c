@@ -49,6 +49,38 @@ static int demux_thread(void *arg){
             break;
         }
 
+        /* ---------- seek 处理 ---------- */
+        if (app->seek_req) {
+            /*
+             * av_seek_frame 参数说明：
+             *   stream_index = -1  → 用 AV_TIME_BASE 时间基（微秒）定位
+             *   timestamp          → seek_pos（微秒）
+             *   flags              → seek_flags（向前跳 0，向后跳 AVSEEK_FLAG_BACKWARD）
+             */
+            int seek_ret = av_seek_frame(app->fmt_ctx, -1, app->seek_pos, app->seek_flags);
+            if (seek_ret < 0) {
+                fprintf(stderr, "av_seek_frame 失败: %s\n",
+                        av_err2str(seek_ret));
+            } else {
+                /* 1. 清空旧包，避免旧数据被解码 */
+                packet_queue_flush(app->video_pkt_queue);
+                packet_queue_flush(app->audio_pkt_queue);
+
+                /* 2. 插入哨兵包，通知解码线程刷新解码器 */
+                packet_queue_put_flush_pkt(app->video_pkt_queue);
+                if (app->audio_stream_index >= 0) {
+                    packet_queue_put_flush_pkt(app->audio_pkt_queue);
+                }
+
+                /* 3. 重置结束标志，允许 decoder/control 继续工作 */
+                app->demux_finished        = 0;
+                app->video_decode_finished = 0;
+                app->audio_decode_finished = 0;
+            }
+
+            app->seek_req = 0; //消费完 seek 请求
+        }
+
         //app.h里把 PacketQueue 设计成了不透明类型。这说明现在还需要给队列模块补一个查询接口，不然 demux 模块不应该知道队列内部结构。
         if(app->video_pkt_queue && packet_queue_size(app->video_pkt_queue) > MAX_VIDEOQ_SIZE){
             SDL_Delay(10);

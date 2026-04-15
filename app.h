@@ -9,6 +9,9 @@
 #include<libswscale/swscale.h>
 #include<libswresample/swresample.h>
 #include<libavutil/channel_layout.h>
+#include<libavfilter/avfilter.h>
+#include<libavfilter/buffersink.h>
+#include<libavfilter/buffersrc.h>
 
 typedef struct PacketQueue PacketQueue;
 typedef struct FrameQueue FrameQueue;
@@ -46,6 +49,7 @@ typedef struct AppState
 
     int quit;
     int paused;
+    int is_rtsp;
     int demux_finished;
     int video_decode_finished;
     int audio_decode_finished;
@@ -116,6 +120,24 @@ typedef struct AppState
     double audio_clock;//最近一次回调里，已经交给 SDL 的音频进度（以秒为单位）
     int audio_hw_buf_size;//音频设备一次硬件缓冲的大致字节数
     int64_t audio_callback_time;//上一次更新 audio_clock 的现实时间戳（微秒）
+
+    /* seek */
+    int seek_req;       //有 seek 请求时置 1，demux 线程消费后清零
+    int64_t seek_pos;   //seek 目标位置，单位 AV_TIME_BASE（微秒）
+    int seek_flags;     //传给 av_seek_frame 的 flags，向前跳时加 AVSEEK_FLAG_BACKWARD
+
+    /* speed — 变速不变调 */
+    double speed;            //当前播放倍速，默认 1.0；范围 [0.5, 2.0]
+    int    speed_change_req; //主线程置 1，音频解码线程检测后重建 atempo 滤镜图
+
+    /* volume */
+    int volume;              // 音量大小，范围 0 到 SDL_MIX_MAXVOLUME (128)
+
+    /* audio filter graph（atempo 时间拉伸） */
+    double audio_filter_pts;        // 自己维护的滤镜输出端连续 PTS，彻底解决 FFmpeg filter PTS 跳跃问题
+    AVFilterGraph   *audio_fg;      //滤镜图，abuffer → atempo → abuffersink
+    AVFilterContext *audio_fg_src;  //abuffersrc 入口 context
+    AVFilterContext *audio_fg_sink; //abuffersink 出口 context
 }AppState;
 
 #endif

@@ -26,4 +26,10 @@ int frame_queue_try_peek_readable(FrameQueue *frame_q,VideoFrame **vf);
 void packet_queue_abort(PacketQueue *packet_q);
 void frame_queue_abort(FrameQueue *frame_q);
 
+/* seek 辅助：清空队列 / 插入 flush 标记包 / 判断 flush 包 / 清空帧队列 */
+void packet_queue_flush(PacketQueue *packet_q);
+void packet_queue_put_flush_pkt(PacketQueue *packet_q);
+int  packet_queue_is_flush_pkt(const AVPacket *pkt);
+void frame_queue_flush(FrameQueue *frame_q);
+
 #endif
