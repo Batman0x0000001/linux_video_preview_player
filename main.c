@@ -46,7 +46,6 @@ static void app_state_init(AppState *app,const char *filename){
     app->audio_output_idle = 1;
 
     app->speed = 1.0;
-    app->speed_change_req = 0;
     app->audio_filter_pts = -1.0;
     app->volume = 128; /* SDL_MIX_MAXVOLUME 默认等于 128 */
 }

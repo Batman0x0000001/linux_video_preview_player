@@ -230,7 +230,6 @@ static int drain_video_decoder(AppState *app, AVFrame *frame)
 static int push_audio_frame(AppState *app, AVFrame *frame, AVFrame *filt_frame, double raw_pts_sec)
 {
     int ret;
-    AVRational sink_tb;
     double filt_pts_sec;
 
     if (!app->audio_fg) {
@@ -250,8 +249,6 @@ static int push_audio_frame(AppState *app, AVFrame *frame, AVFrame *filt_frame, 
     }
 
     /* 2. 循环取出所有已拉伸帧 */
-    sink_tb = av_buffersink_get_time_base(app->audio_fg_sink);
-
     while (1) {
         ret = speed_filter_receive(app, filt_frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -372,8 +369,11 @@ static int drain_audio_decoder(AppState *app, AVFrame *frame, AVFrame *filt_fram
             filt_pts_sec = app->audio_filter_pts;
             app->audio_filter_pts += (double)filt_frame->nb_samples / app->audio_src.sample_rate;
 
-            queue_decoded_audio(app, filt_frame, filt_pts_sec);
+            ret = queue_decoded_audio(app, filt_frame, filt_pts_sec);
             av_frame_unref(filt_frame);
+            if (ret < 0) {
+                return ret;
+            }
         }
     }
 
@@ -623,14 +623,6 @@ static int audio_decoder_thread(void *arg)
     }
 
     while (!app->quit) {
-        /* ---- 速度变更检测：重建 atempo 滤镜图 ---- */
-        if (app->speed_change_req) {
-            if (speed_filter_rebuild(app) < 0) {
-                fprintf(stderr, "speed_filter_rebuild 失败，继续使用旧善镜图\n");
-            }
-            app->speed_change_req = 0;
-        }
-
         if (app->audio_buf_queue &&
             audio_buffer_queue_size(app->audio_buf_queue) > audio_buf_queue_limit_bytes(app)) {
             SDL_Delay(5);

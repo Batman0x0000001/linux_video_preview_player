@@ -128,7 +128,6 @@ typedef struct AppState
 
     /* speed — 变速不变调 */
     double speed;            //当前播放倍速，默认 1.0；范围 [0.5, 2.0]
-    int    speed_change_req; //主线程置 1，音频解码线程检测后重建 atempo 滤镜图
 
     /* volume */
     int volume;              // 音量大小，范围 0 到 SDL_MIX_MAXVOLUME (128)

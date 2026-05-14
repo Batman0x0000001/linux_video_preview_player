@@ -87,6 +87,11 @@ static int demux_thread(void *arg){
             continue;
         }
 
+        if (app->audio_pkt_queue && packet_queue_size(app->audio_pkt_queue) > MAX_AUDIOQ_SIZE) {
+            SDL_Delay(10);
+            continue;
+        }
+
         ret = av_read_frame(app->fmt_ctx,pkt);
         if(ret < 0){
             if(ret == AVERROR_EOF){
